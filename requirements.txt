@@ -8,3 +8,4 @@ joblib==1.4.2
 matplotlib==3.9.2
 dvc==3.56.0
 pathspec==0.12.1
+pathspec==0.12.1
