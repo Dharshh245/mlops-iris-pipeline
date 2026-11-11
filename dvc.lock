@@ -38,14 +38,14 @@ stages:
           model: random_forest
           random_state: 42
           n_estimators: 10
-          max_depth: 2
+          max_depth: 3
           C: 1.0
           max_iter: 200
     outs:
     - path: models/model.joblib
       hash: md5
-      md5: d2b95e801a621fb34b709367b7622f0b
-      size: 11009
+      md5: ac4237408ea4fd1f906a1e71e788f49a
+      size: 14529
   evaluate:
     cmd: python src/evaluate.py
     deps:
@@ -55,8 +55,8 @@ stages:
       size: 849
     - path: models/model.joblib
       hash: md5
-      md5: d2b95e801a621fb34b709367b7622f0b
-      size: 11009
+      md5: ac4237408ea4fd1f906a1e71e788f49a
+      size: 14529
     - path: src/evaluate.py
       hash: md5
       md5: 3f4f0cf5362846be9f8d30f3c42bf683
@@ -67,13 +67,13 @@ stages:
     outs:
     - path: metrics.json
       hash: md5
-      md5: f317cbc8a7bf54d530aa375f32797019
+      md5: de2b65da19052c61c539bfc0a13434ad
       size: 51
     - path: plots/confusion_matrix.png
       hash: md5
-      md5: 423aa5ea3de85bd4b10adb3066b7a2c9
-      size: 24057
+      md5: 952ba87fb931e880b70c174c2a081d6c
+      size: 24409
     - path: plots/predictions.csv
       hash: md5
-      md5: 7faaf0efb33031031bbb8358a3e4bd05
-      size: 608
+      md5: f004e6916dec66ba356cbcb344461dad
+      size: 607

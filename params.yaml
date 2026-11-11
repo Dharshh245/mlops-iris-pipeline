@@ -6,7 +6,7 @@ train:
   model: random_forest      # random_forest | logistic_regression
   random_state: 42
   n_estimators: 10
-  max_depth: 2
+  max_depth: 3
   C: 1.0                    # used only by logistic_regression
   max_iter: 200
 
