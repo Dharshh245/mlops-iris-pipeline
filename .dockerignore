@@ -1,0 +1,14 @@
+.git
+.github
+.dvc/cache
+data
+notebooks
+tests
+scripts
+docs
+mlruns
+mlflow.db
+build
+plots
+**/__pycache__
+*.md

@@ -1,0 +1,178 @@
+# Q2 (c) + (d) - CI/CD:
+#   build:  dvc repro -> tests -> MLflow package -> Docker image tagged with the
+#           commit SHA -> smoke test -> push to GitHub Container Registry (GHCR)
+#   deploy: kubectl set image -> rollout verification -> automatic rollback
+name: CI/CD - build, publish, deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      simulate_failure:
+        description: "Deploy a broken image tag to demonstrate automatic rollback"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write          # push to ghcr.io with GITHUB_TOKEN
+
+concurrency:
+  group: deploy-main
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt -r api/requirements.txt
+          pip install mlflow==2.17.2 pytest==8.3.3 httpx==0.27.2
+
+      - name: Reproduce training pipeline (DVC)
+        run: |
+          dvc pull data/raw/iris.csv.dvc || python src/get_data.py
+          dvc repro
+          cat metrics.json
+
+      - name: Quality gate - accuracy >= 0.85
+        run: python -c "import json,sys; m=json.load(open('metrics.json')); print(m); sys.exit(m['accuracy'] < 0.85)"
+
+      - name: Unit + API tests
+        run: pytest -v
+
+      - name: Package and register model with MLflow
+        run: python src/package_mlflow.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mlflow-model-${{ github.sha }}
+          path: |
+            build/mlflow_model
+            mlflow.db
+            metrics.json
+
+      - name: Image name (lower-case, tagged with commit SHA)
+        id: meta
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            --build-arg MODEL_VERSION=${{ github.sha }} \
+            -t ${{ steps.meta.outputs.image }}:${{ github.sha }} \
+            -t ${{ steps.meta.outputs.image }}:latest .
+
+      - name: Smoke test the container
+        run: |
+          docker run -d --name api -p 8000:8000 ${{ steps.meta.outputs.image }}:${{ github.sha }}
+          for i in $(seq 1 20); do curl -fs localhost:8000/health && break; sleep 1; done
+          curl -fs -X POST localhost:8000/predict -H 'Content-Type: application/json' \
+            -d '{"instances":[{"sepal_length":5.1,"sepal_width":3.5,"petal_length":1.4,"petal_width":0.2}]}'
+          docker rm -f api
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push image
+        run: |
+          docker push ${{ steps.meta.outputs.image }}:${{ github.sha }}
+          docker push ${{ steps.meta.outputs.image }}:latest
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      IMAGE: ${{ needs.build.outputs.image }}
+      TAG: ${{ github.sha }}
+      # Optional: base64-encoded kubeconfig of a real cluster. If not set, a
+      # throw-away kind cluster is created inside the runner.
+      KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Use real cluster (KUBE_CONFIG secret)
+        if: env.KUBE_CONFIG != ''
+        run: |
+          mkdir -p ~/.kube
+          echo "$KUBE_CONFIG" | base64 -d > ~/.kube/config
+
+      - name: Create kind cluster (no KUBE_CONFIG secret)
+        if: env.KUBE_CONFIG == ''
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: mlops
+
+      - name: Load images into kind
+        if: env.KUBE_CONFIG == ''
+        run: |
+          docker pull "$IMAGE:$TAG"
+          docker tag "$IMAGE:$TAG" "$IMAGE:previous"     # stands in for the last release
+          kind load docker-image "$IMAGE:$TAG" "$IMAGE:previous" --name mlops
+
+      - name: First-time setup (Deployment + Service)
+        run: |
+          if ! kubectl get deployment iris-api >/dev/null 2>&1; then
+            sed "s#image: .*#image: $IMAGE:previous#" k8s/deployment.yaml | kubectl apply -f -
+            kubectl rollout status deployment/iris-api --timeout=180s
+          fi
+          kubectl apply -f k8s/service.yaml
+
+      - name: Continuous deployment - kubectl set image
+        run: |
+          NEW_TAG="$TAG"
+          if [ "${{ inputs.simulate_failure }}" = "true" ]; then
+            NEW_TAG="does-not-exist"               # forces a failed rollout
+          fi
+          kubectl set image deployment/iris-api iris-api="$IMAGE:$NEW_TAG"
+          kubectl annotate deployment/iris-api \
+            kubernetes.io/change-cause="CI deploy $NEW_TAG (run ${{ github.run_id }})" --overwrite
+
+      - name: Verify rollout (roll back on failure)
+        run: |
+          if ! kubectl rollout status deployment/iris-api --timeout=120s; then
+            echo "::error::Rollout failed - rolling back"
+            kubectl rollout undo deployment/iris-api
+            kubectl rollout status deployment/iris-api --timeout=120s
+            kubectl rollout history deployment/iris-api
+            exit 1
+          fi
+          kubectl get pods -l app=iris-api -o wide
+
+      - name: Post-deploy smoke test (roll back on failure)
+        run: |
+          kubectl port-forward svc/iris-api 8080:80 >/dev/null 2>&1 &
+          sleep 5
+          if curl -fs localhost:8080/health | tee /dev/stderr | grep -q "\"model_version\":\"$TAG\"" && \
+             curl -fs -X POST localhost:8080/predict -H 'Content-Type: application/json' \
+               -d '{"instances":[{"sepal_length":6.7,"sepal_width":3.0,"petal_length":5.2,"petal_width":2.3}]}'; then
+            echo; echo "Deployment of $IMAGE:$TAG verified"
+          else
+            echo "::error::Smoke test failed - rolling back"
+            kubectl rollout undo deployment/iris-api
+            kubectl rollout status deployment/iris-api --timeout=120s
+            exit 1
+          fi
+          kubectl rollout history deployment/iris-api

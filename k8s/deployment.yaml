@@ -1,0 +1,52 @@
+# Q2 (b) - 3 replicas with liveness & readiness probes
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: iris-api
+  labels:
+    app: iris-api
+spec:
+  replicas: 3
+  revisionHistoryLimit: 5              # keeps old ReplicaSets for `kubectl rollout undo`
+  selector:
+    matchLabels:
+      app: iris-api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0                # never drop below 3 ready pods during an update
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: iris-api
+    spec:
+      containers:
+        - name: iris-api
+          # CI/CD replaces this with ghcr.io/<owner>/<repo>:<commit-sha> via `kubectl set image`
+          image: ghcr.io/dharshh245/mlops-iris-pipeline:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          resources:
+            requests:
+              cpu: 100m                # required for the HPA CPU percentage
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          readinessProbe:              # gate traffic until the model is loaded
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:               # restart the container if it hangs
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 3

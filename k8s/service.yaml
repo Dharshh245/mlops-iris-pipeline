@@ -1,0 +1,16 @@
+# Q2 (b) - Service exposing the 3 API pods
+apiVersion: v1
+kind: Service
+metadata:
+  name: iris-api
+  labels:
+    app: iris-api
+spec:
+  type: NodePort          # reachable on <node-ip>:30080 (minikube: `minikube service iris-api --url`)
+  selector:
+    app: iris-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      nodePort: 30080

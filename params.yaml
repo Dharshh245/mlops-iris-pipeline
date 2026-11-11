@@ -1,0 +1,14 @@
+prepare:
+  test_size: 0.2
+  random_state: 42
+
+train:
+  model: random_forest      # random_forest | logistic_regression
+  random_state: 42
+  n_estimators: 10
+  max_depth: 2
+  C: 1.0                    # used only by logistic_regression
+  max_iter: 200
+
+evaluate:
+  average: macro            # averaging used for F1
